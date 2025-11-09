@@ -37,52 +37,152 @@ export default function DashboardPage() {
     { id: '5', symbol: 'ENRG', name: 'EnergyCo', price: 1000, previousPrice: 1000, change: 0, changePercent: 0 },
   ])
 
-  const [news, setNews] = useState<NewsItem[]>([
-    {
-      id: '1',
-      timestamp: new Date(),
-      title: 'Market Opens Strong',
-      content: 'All sectors showing positive momentum',
-      impact: 'positive',
-      affectedStocks: []
-    }
-  ])
+  const [news, setNews] = useState<NewsItem[]>([])
+  const [newsLoading, setNewsLoading] = useState(true)
 
   const [selectedStock, setSelectedStock] = useState<Stock | null>(null)
   const [tradeType, setTradeType] = useState<'buy' | 'sell'>('buy')
   const [quantity, setQuantity] = useState(1)
   const [showTradeModal, setShowTradeModal] = useState(false)
 
-  useEffect(() => {
-    const name = localStorage.getItem('teamName')
-    if (!name) {
-      router.push('/')
-      return
-    }
-    setTeamName(name)
-    setPortfolio(prev => ({ ...prev, teamName: name }))
-
-    // Simulate price updates
-    const interval = setInterval(() => {
-      setStocks(prev => prev.map(stock => {
-        const change = (Math.random() - 0.5) * 100
-        const newPrice = Math.max(stock.price + change, 100)
-        return {
-          ...stock,
-          previousPrice: stock.price,
-          price: newPrice,
-          change: newPrice - stock.previousPrice,
-          changePercent: ((newPrice - stock.previousPrice) / stock.previousPrice) * 100
+  // Fetch news from API
+  const fetchNews = async () => {
+    try {
+      const response = await fetch('/api/news?limit=10')
+      if (response.ok) {
+        const newsData = await response.json()
+        setNews(newsData)
+        setNewsLoading(false)
+        
+        // Apply news impacts to stock prices
+        const newsWithImpacts = newsData.filter((n: NewsItem) => 
+          n.affectedStocks && n.affectedStocks.length > 0
+        )
+        
+        if (newsWithImpacts.length > 0) {
+          // Send news impacts to stock update API
+          await fetch('/api/stocks/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: 'applyNews',
+              newsImpacts: newsWithImpacts.map((n: NewsItem) => ({
+                symbol: n.affectedStocks[0],
+                priceImpact: (n as any).priceImpact || 0
+              }))
+            })
+          })
         }
-      }))
-    }, 5000)
+      }
+    } catch (error) {
+      console.error('Failed to fetch news:', error)
+      setNewsLoading(false)
+    }
+  }
 
-    return () => clearInterval(interval)
+  useEffect(() => {
+    const validateSession = async () => {
+      const name = localStorage.getItem('teamName')
+      const sessionId = localStorage.getItem('sessionId')
+      const isLocked = localStorage.getItem('teamLocked')
+      
+      // Check if team is logged in
+      if (!name || !sessionId || isLocked !== 'true') {
+        router.push('/participant/join')
+        return
+      }
+      
+      try {
+        // Validate session with server
+        const response = await fetch(`/api/teams/sessions?teamName=${encodeURIComponent(name)}&sessionId=${sessionId}`)
+        
+        if (!response.ok) {
+          // Session invalid, redirect to login
+          localStorage.clear()
+          router.push('/participant/join')
+          return
+        }
+        
+        const sessionData = await response.json()
+        
+        if (!sessionData.hasActiveSession || !sessionData.isCurrentSession) {
+          // Session expired or invalid
+          alert('Your session has expired or this team is logged in on another device.')
+          localStorage.clear()
+          router.push('/participant/join')
+          return
+        }
+        
+        // Session valid, set team name
+        setTeamName(name)
+        setPortfolio(prev => ({ ...prev, teamName: name }))
+        
+        // Set up session heartbeat (update every 2 minutes)
+        const heartbeatInterval = setInterval(async () => {
+          try {
+            const heartbeatResponse = await fetch('/api/teams/sessions', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ teamName: name, sessionId })
+            })
+            
+            if (!heartbeatResponse.ok) {
+              const errorData = await heartbeatResponse.json()
+              if (errorData.sessionExpired) {
+                alert('Your session has expired. Please login again.')
+                localStorage.clear()
+                router.push('/participant/join')
+              }
+            }
+          } catch (error) {
+            console.error('Heartbeat error:', error)
+          }
+        }, 2 * 60 * 1000) // Every 2 minutes
+        
+        // Fetch initial news
+        fetchNews()
+        
+        // Fetch news periodically (every 30 seconds)
+        const newsInterval = setInterval(fetchNews, 30000)
+        
+        // Update stock prices with news-driven changes
+        const priceInterval = setInterval(async () => {
+          try {
+            // Trigger price tick (applies news impacts + random noise)
+            const response = await fetch('/api/stocks/update', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'tick' })
+            })
+            
+            if (response.ok) {
+              const data = await response.json()
+              if (data.stocks) {
+                setStocks(data.stocks)
+              }
+            }
+          } catch (error) {
+            console.error('Failed to update stock prices:', error)
+          }
+        }, 5000)
+        
+        return () => {
+          clearInterval(heartbeatInterval)
+          clearInterval(newsInterval)
+          clearInterval(priceInterval)
+        }
+      } catch (error) {
+        console.error('Session validation error:', error)
+        router.push('/participant/join')
+      }
+    }
+    
+    validateSession()
   }, [router])
 
-  const handleTrade = (stock: Stock, type: 'buy' | 'sell') => {
+  const handleTrade = (stock: Stock) => {
     setSelectedStock(stock)
-    setTradeType(type)
+    setTradeType('buy')
     setQuantity(1)
     setShowTradeModal(true)
   }
@@ -90,81 +190,52 @@ export default function DashboardPage() {
   const executeTrade = () => {
     if (!selectedStock) return
 
-    if (tradeType === 'buy') {
-      const totalCost = selectedStock.price * quantity
-      if (totalCost > portfolio.cash) {
-        alert('Insufficient funds!')
-        return
-      }
+    const totalCost = selectedStock.price * quantity
+    if (totalCost > portfolio.cash) {
+      alert('Insufficient funds!')
+      return
+    }
 
-      setPortfolio(prev => {
-        const existingHolding = prev.holdings.find(h => h.stockId === selectedStock.id)
-        const newHoldings = existingHolding
-          ? prev.holdings.map(h => 
-              h.stockId === selectedStock.id
-                ? {
-                    ...h,
-                    quantity: h.quantity + quantity,
-                    avgPrice: (h.avgPrice * h.quantity + selectedStock.price * quantity) / (h.quantity + quantity),
-                    currentPrice: selectedStock.price,
-                    totalValue: (h.quantity + quantity) * selectedStock.price,
-                    profitLoss: ((h.quantity + quantity) * selectedStock.price) - ((h.avgPrice * h.quantity + selectedStock.price * quantity)),
-                    profitLossPercent: (((h.quantity + quantity) * selectedStock.price) - ((h.avgPrice * h.quantity + selectedStock.price * quantity))) / ((h.avgPrice * h.quantity + selectedStock.price * quantity)) * 100
-                  }
-                : h
-            )
-          : [
-              ...prev.holdings,
-              {
-                stockId: selectedStock.id,
-                symbol: selectedStock.symbol,
-                quantity,
-                avgPrice: selectedStock.price,
-                currentPrice: selectedStock.price,
-                totalValue: selectedStock.price * quantity,
-                profitLoss: 0,
-                profitLossPercent: 0
-              }
-            ]
-
-        const newCash = prev.cash - totalCost
-        const holdingsValue = newHoldings.reduce((sum, h) => sum + h.totalValue, 0)
-        
-        return {
-          ...prev,
-          cash: newCash,
-          holdings: newHoldings,
-          totalValue: newCash + holdingsValue
-        }
-      })
-    } else {
-      const holding = portfolio.holdings.find(h => h.stockId === selectedStock.id)
-      if (!holding || holding.quantity < quantity) {
-        alert('Insufficient shares!')
-        return
-      }
-
-      setPortfolio(prev => {
-        const totalRevenue = selectedStock.price * quantity
-        const newHoldings = prev.holdings
-          .map(h => 
+    setPortfolio(prev => {
+      const existingHolding = prev.holdings.find(h => h.stockId === selectedStock.id)
+      const newHoldings = existingHolding
+        ? prev.holdings.map(h => 
             h.stockId === selectedStock.id
-              ? { ...h, quantity: h.quantity - quantity }
+              ? {
+                  ...h,
+                  quantity: h.quantity + quantity,
+                  avgPrice: (h.avgPrice * h.quantity + selectedStock.price * quantity) / (h.quantity + quantity),
+                  currentPrice: selectedStock.price,
+                  totalValue: (h.quantity + quantity) * selectedStock.price,
+                  profitLoss: ((h.quantity + quantity) * selectedStock.price) - ((h.avgPrice * h.quantity + selectedStock.price * quantity)),
+                  profitLossPercent: (((h.quantity + quantity) * selectedStock.price) - ((h.avgPrice * h.quantity + selectedStock.price * quantity))) / ((h.avgPrice * h.quantity + selectedStock.price * quantity)) * 100
+                }
               : h
           )
-          .filter(h => h.quantity > 0)
+        : [
+            ...prev.holdings,
+            {
+              stockId: selectedStock.id,
+              symbol: selectedStock.symbol,
+              quantity,
+              avgPrice: selectedStock.price,
+              currentPrice: selectedStock.price,
+              totalValue: selectedStock.price * quantity,
+              profitLoss: 0,
+              profitLossPercent: 0
+            }
+          ]
 
-        const newCash = prev.cash + totalRevenue
-        const holdingsValue = newHoldings.reduce((sum, h) => sum + h.totalValue, 0)
-
-        return {
-          ...prev,
-          cash: newCash,
-          holdings: newHoldings,
-          totalValue: newCash + holdingsValue
-        }
-      })
-    }
+      const newCash = prev.cash - totalCost
+      const holdingsValue = newHoldings.reduce((sum, h) => sum + h.totalValue, 0)
+      
+      return {
+        ...prev,
+        cash: newCash,
+        holdings: newHoldings,
+        totalValue: newCash + holdingsValue
+      }
+    })
 
     setShowTradeModal(false)
   }
@@ -288,21 +359,12 @@ export default function DashboardPage() {
                       </div>
                     </div>
 
-                    <div className="flex gap-2 mt-3">
-                      <button
-                        onClick={() => handleTrade(stock, 'buy')}
-                        className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm font-semibold"
-                      >
-                        Buy
-                      </button>
-                      <button
-                        onClick={() => handleTrade(stock, 'sell')}
-                        className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors text-sm font-semibold"
-                        disabled={!portfolio.holdings.find(h => h.stockId === stock.id)}
-                      >
-                        Sell
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleTrade(stock)}
+                      className="w-full px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors text-sm font-semibold mt-3"
+                    >
+                      Buy Stock
+                    </button>
                   </motion.div>
                 ))}
               </div>
@@ -405,7 +467,7 @@ export default function DashboardPage() {
               onClick={(e) => e.stopPropagation()}
             >
               <h3 className="text-2xl font-bold mb-6">
-                {tradeType === 'buy' ? 'Buy' : 'Sell'} {selectedStock.symbol}
+                Buy {selectedStock.symbol}
               </h3>
 
               <div className="space-y-4 mb-6">
@@ -427,15 +489,13 @@ export default function DashboardPage() {
 
                 <div className="bg-white/5 rounded-xl p-4">
                   <div className="flex justify-between mb-2">
-                    <span className="text-gray-400">Total Amount</span>
+                    <span className="text-gray-400">Total Cost</span>
                     <span className="font-bold">{formatCurrency(selectedStock.price * quantity)}</span>
                   </div>
-                  {tradeType === 'buy' && (
-                    <div className="flex justify-between text-sm">
-                      <span className="text-gray-400">Available Cash</span>
-                      <span>{formatCurrency(portfolio.cash)}</span>
-                    </div>
-                  )}
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-400">Available Cash</span>
+                    <span>{formatCurrency(portfolio.cash)}</span>
+                  </div>
                 </div>
               </div>
 
@@ -448,13 +508,9 @@ export default function DashboardPage() {
                 </button>
                 <button
                   onClick={executeTrade}
-                  className={`flex-1 px-6 py-3 rounded-xl transition-all font-semibold ${
-                    tradeType === 'buy'
-                      ? 'bg-green-600 hover:bg-green-700'
-                      : 'bg-red-600 hover:bg-red-700'
-                  }`}
+                  className="flex-1 px-6 py-3 rounded-xl transition-all font-semibold bg-green-600 hover:bg-green-700"
                 >
-                  Confirm {tradeType === 'buy' ? 'Buy' : 'Sell'}
+                  Confirm Buy
                 </button>
               </div>
             </motion.div>

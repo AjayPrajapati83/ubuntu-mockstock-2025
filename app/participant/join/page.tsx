@@ -13,13 +13,24 @@ export default function ParticipantJoinPage() {
   const [registeredTeams, setRegisteredTeams] = useState<string[]>([])
 
   useEffect(() => {
+    // Check if team is already locked (logged in before)
+    const isLocked = localStorage.getItem('teamLocked')
+    const existingTeam = localStorage.getItem('teamName')
+    
+    if (isLocked === 'true' && existingTeam) {
+      // Team already logged in, redirect to dashboard
+      router.push('/dashboard')
+      return
+    }
+    
     // Fetch registered teams from API
     fetchRegisteredTeams()
-  }, [])
+  }, [router])
 
   const fetchRegisteredTeams = async () => {
     try {
-      const response = await fetch('/api/teams/registered')
+      // Fetch only active teams (game must be started)
+      const response = await fetch('/api/teams/registered?activeOnly=true')
       if (response.ok) {
         const data = await response.json()
         setRegisteredTeams(data.teams || [])
@@ -34,9 +45,6 @@ export default function ParticipantJoinPage() {
     setError('')
     setIsLoading(true)
 
-    // Simulate loading
-    await new Promise(resolve => setTimeout(resolve, 800))
-
     const trimmedName = teamName.trim()
 
     if (!trimmedName) {
@@ -45,16 +53,87 @@ export default function ParticipantJoinPage() {
       return
     }
 
-    // Check if team is registered (if admin has created teams)
-    if (registeredTeams.length > 0 && !registeredTeams.includes(trimmedName)) {
-      setError('Team name not found. Please check with admin for registered team names.')
-      setIsLoading(false)
-      return
-    }
+    try {
+      // 1. Check if game is active and team is registered
+      const teamsResponse = await fetch('/api/teams/registered?activeOnly=true')
+      if (!teamsResponse.ok) {
+        setError('Failed to verify team registration')
+        setIsLoading(false)
+        return
+      }
 
-    // Store team name and redirect to dashboard
-    localStorage.setItem('teamName', trimmedName)
-    router.push('/dashboard')
+      const teamsData = await teamsResponse.json()
+      
+      // Check if game is active
+      if (!teamsData.gameIsActive) {
+        setError('Game has not started yet. Please wait for admin to start the game.')
+        setIsLoading(false)
+        return
+      }
+
+      // Check if team is in the active teams list
+      const activeTeams = teamsData.teams || []
+      if (activeTeams.length === 0) {
+        setError('No teams have been registered yet. Please contact admin.')
+        setIsLoading(false)
+        return
+      }
+
+      if (!activeTeams.includes(trimmedName)) {
+        setError('Team name not found or not activated. Please check with admin for valid team names.')
+        setIsLoading(false)
+        return
+      }
+
+      // 2. Check if team already has an active session
+      const deviceId = localStorage.getItem('deviceId') || `device_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+      localStorage.setItem('deviceId', deviceId)
+
+      const sessionCheckResponse = await fetch(`/api/teams/sessions?teamName=${encodeURIComponent(trimmedName)}`)
+      if (!sessionCheckResponse.ok) {
+        setError('Failed to verify session')
+        setIsLoading(false)
+        return
+      }
+
+      const sessionData = await sessionCheckResponse.json()
+      
+      if (sessionData.hasActiveSession && !sessionData.isCurrentSession) {
+        setError('This team is already logged in on another device. Each team can only have one active session.')
+        setIsLoading(false)
+        return
+      }
+
+      // 3. Create new session
+      const createSessionResponse = await fetch('/api/teams/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ teamName: trimmedName, deviceId })
+      })
+
+      if (!createSessionResponse.ok) {
+        const errorData = await createSessionResponse.json()
+        setError(errorData.error || 'Failed to create session')
+        setIsLoading(false)
+        return
+      }
+
+      const sessionResult = await createSessionResponse.json()
+
+      // 4. Store session info and redirect
+      localStorage.setItem('teamName', trimmedName)
+      localStorage.setItem('sessionId', sessionResult.session.sessionId)
+      localStorage.setItem('loginTime', sessionResult.session.loginTime)
+      
+      // Mark that this team has logged in (prevent switching)
+      localStorage.setItem('teamLocked', 'true')
+      
+      router.push('/dashboard')
+    } catch (error) {
+      console.error('Login error:', error)
+      setError('An error occurred during login. Please try again.')
+      setIsLoading(false)
+    }
   }
 
   return (

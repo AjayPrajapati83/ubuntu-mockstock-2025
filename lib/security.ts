@@ -83,7 +83,7 @@ export interface TradeValidationParams {
 }
 
 export function validateTrade(params: TradeValidationParams): { valid: boolean; error?: string } {
-  const { teamName, stockId, type, quantity, price, teamCash, teamHoldings, gameIsActive } = params
+  const { teamName, stockId, type, quantity, price, teamCash, gameIsActive } = params
   
   // 1. Check if game is active
   if (!gameIsActive) {
@@ -103,31 +103,18 @@ export function validateTrade(params: TradeValidationParams): { valid: boolean; 
     return { valid: false, error: 'Invalid stock price' }
   }
   
-  // 3. Validate BUY trade
-  if (type === 'buy') {
-    const totalCost = quantity * price
-    
-    if (totalCost > teamCash) {
-      return { 
-        valid: false, 
-        error: `Insufficient funds. Required: ₹${totalCost.toLocaleString()}, Available: ₹${teamCash.toLocaleString()}` 
-      }
-    }
+  // 3. Only BUY trades allowed (selling disabled)
+  if (type !== 'buy') {
+    return { valid: false, error: 'Only buying stocks is allowed in this game' }
   }
   
-  // 4. Validate SELL trade
-  if (type === 'sell') {
-    const holding = teamHoldings.find(h => h.stockId === stockId)
-    
-    if (!holding) {
-      return { valid: false, error: 'You do not own any shares of this stock' }
-    }
-    
-    if (holding.quantity < quantity) {
-      return { 
-        valid: false, 
-        error: `Insufficient shares. You own ${holding.quantity} shares, trying to sell ${quantity}` 
-      }
+  // 4. Validate BUY trade
+  const totalCost = quantity * price
+  
+  if (totalCost > teamCash) {
+    return { 
+      valid: false, 
+      error: `Insufficient funds. Required: ₹${totalCost.toLocaleString()}, Available: ₹${teamCash.toLocaleString()}` 
     }
   }
   

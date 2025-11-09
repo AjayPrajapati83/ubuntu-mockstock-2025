@@ -33,6 +33,7 @@ export interface NewsItem {
   content: string
   impact: 'positive' | 'negative' | 'neutral'
   affectedStocks: string[]
+  priceImpact?: number // Percentage change hint (hidden from participants)
 }
 
 export interface GameState {

@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import { 
   Shield, Users, DollarSign, Clock, TrendingUp, Plus, 
   Play, Pause, StopCircle, Eye, Settings, Trash2, Edit,
-  BarChart3, Trophy, LogOut
+  BarChart3, Trophy, LogOut, Newspaper
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { formatCurrency } from '@/lib/utils'
@@ -70,12 +70,17 @@ export default function AdminDashboard() {
     const teamNames = updatedTeams.map(t => t.teamName)
     localStorage.setItem('teamNames', JSON.stringify(teamNames))
     
-    // Update API with registered team names
+    // Update API with registered team names and their cash values
     try {
+      const teamsWithCash = updatedTeams.map(t => ({
+        teamName: t.teamName,
+        cash: t.cash
+      }))
+      
       await fetch('/api/teams/registered', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ teams: teamNames })
+        body: JSON.stringify({ teams: teamsWithCash })
       })
     } catch (error) {
       console.error('Failed to sync teams to API:', error)
@@ -106,27 +111,74 @@ export default function AdminDashboard() {
     }
   }
 
-  const handleStartGame = () => {
+  const handleStartGame = async () => {
     if (teams.length === 0) {
       alert('Please add at least one team before starting the game')
       return
     }
-    setIsGameActive(true)
-    localStorage.setItem('gameActive', 'true')
-    localStorage.setItem('currentRound', '1')
-    localStorage.setItem('roundDuration', roundDuration.toString())
+    
+    try {
+      // Activate game and all registered teams
+      const response = await fetch('/api/teams/registered', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'activateGame' })
+      })
+      
+      if (!response.ok) {
+        alert('Failed to activate game. Please try again.')
+        return
+      }
+      
+      const result = await response.json()
+      console.log('Game activated:', result.message)
+      
+      setIsGameActive(true)
+      localStorage.setItem('gameActive', 'true')
+      localStorage.setItem('currentRound', '1')
+      localStorage.setItem('roundDuration', roundDuration.toString())
+      
+      alert('Game started! All teams are now active and can login.')
+    } catch (error) {
+      console.error('Failed to start game:', error)
+      alert('An error occurred while starting the game.')
+    }
   }
 
-  const handlePauseGame = () => {
-    setIsGameActive(false)
-    localStorage.setItem('gameActive', 'false')
-  }
-
-  const handleEndGame = () => {
-    if (confirm('Are you sure you want to end the game? This will freeze all trading.')) {
+  const handlePauseGame = async () => {
+    try {
+      // Deactivate game
+      await fetch('/api/teams/registered', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'deactivateGame' })
+      })
+      
       setIsGameActive(false)
       localStorage.setItem('gameActive', 'false')
-      localStorage.setItem('gameEnded', 'true')
+      alert('Game paused. Participants cannot login until you resume.')
+    } catch (error) {
+      console.error('Failed to pause game:', error)
+    }
+  }
+
+  const handleEndGame = async () => {
+    if (confirm('Are you sure you want to end the game? This will freeze all trading.')) {
+      try {
+        // Deactivate game
+        await fetch('/api/teams/registered', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'deactivateGame' })
+        })
+        
+        setIsGameActive(false)
+        localStorage.setItem('gameActive', 'false')
+        localStorage.setItem('gameEnded', 'true')
+        alert('Game ended. All sessions will be terminated.')
+      } catch (error) {
+        console.error('Failed to end game:', error)
+      }
     }
   }
 
@@ -433,13 +485,23 @@ export default function AdminDashboard() {
               </div>
             )}
 
-            <button
-              onClick={handleCalculateResults}
-              className="w-full mt-6 px-6 py-3 bg-ubuntu-orange hover:bg-ubuntu-dark-orange rounded-xl transition-all font-semibold flex items-center justify-center gap-2"
-            >
-              <Eye className="w-5 h-5" />
-              View Full Results
-            </button>
+            <div className="space-y-3 mt-6">
+              <button
+                onClick={() => router.push('/admin/news')}
+                className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-xl transition-all font-semibold flex items-center justify-center gap-2"
+              >
+                <Newspaper className="w-5 h-5" />
+                Manage News
+              </button>
+              
+              <button
+                onClick={handleCalculateResults}
+                className="w-full px-6 py-3 bg-ubuntu-orange hover:bg-ubuntu-dark-orange rounded-xl transition-all font-semibold flex items-center justify-center gap-2"
+              >
+                <Eye className="w-5 h-5" />
+                View Full Results
+              </button>
+            </div>
           </motion.div>
         </div>
       </div>
